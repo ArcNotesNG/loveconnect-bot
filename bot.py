@@ -1,9 +1,8 @@
-import sqlite3, logging, datetime, os
+import sqlite3, logging, datetime, os, asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes, ConversationHandler
 
 # ============ CONFIG - SAFE FOR GITHUB ============
-# Real token goes in Render > Environment Variables, NOT here
 BOT_TOKEN = os.getenv("BOT_TOKEN", "PUT_YOUR_BOT_TOKEN_HERE")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "123456789"))
 DB_FILE = "loveconnect.db"
@@ -21,7 +20,6 @@ PLANS = {
 NAME, AGE, GENDER, LOCATION, BIO, PHOTO = range(6)
 logging.basicConfig(level=logging.INFO)
 
-# ============ DATABASE ============
 def db():
     conn = sqlite3.connect(DB_FILE)
     conn.row_factory = sqlite3.Row
@@ -62,7 +60,6 @@ def is_premium(uid):
         return True
     return False
 
-# ============ START & PROFILE ============
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     u = get_user(uid)
@@ -144,7 +141,6 @@ async def show_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, text="Ma
     else:
         await update.message.reply_text(text, reply_markup=markup)
 
-# ============ MATCHING ============
 async def find_match(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     uid = q.from_user.id
@@ -181,7 +177,6 @@ async def like_match(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_message(match_id, "💖 Someone liked your profile! Open LoveConnect to see who.")
     await q.edit_message_text("❤️ Like sent!")
 
-# ============ PREMIUM / PAYMENT ============
 async def unlock_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     uid = q.from_user.id
@@ -262,6 +257,7 @@ async def back_home(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await show_menu(update, context, "Welcome back 💖")
 
 def main():
+    asyncio.set_event_loop(asyncio.new_event_loop())
     init_db()
     app = Application.builder().token(BOT_TOKEN).build()
     conv = ConversationHandler(

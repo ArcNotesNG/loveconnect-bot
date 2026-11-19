@@ -254,24 +254,23 @@ async def find_match(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pref_gender = me["pref_gender"] or "Anyone"
     pref_min = me["pref_age_min"] or 18
     pref_max = me["pref_age_max"] or 70
-    pref_country = me["pref_country"] or "Any"
-    pref_state = me["pref_state"] or "Any"
     c = db()
     query = """SELECT * FROM users WHERE user_id != ? AND is_banned=0 AND age BETWEEN ? AND ? AND user_id NOT IN (SELECT viewed_id FROM seen WHERE viewer_id=?)"""
     params = [uid, pref_min, pref_max, uid]
     if pref_gender != "Anyone":
         query += " AND gender=?"; params.append(pref_gender)
-    if pref_country != "Any":
-        query += " AND location LIKE ?"; params.append(f"%{pref_country}%")
-    if pref_state.lower() != "any":
-        query += " AND location LIKE ?"; params.append(f"%{pref_state}%")
     query += " ORDER BY RANDOM() LIMIT 1"
     row = c.execute(query, tuple(params)).fetchone()
     if not row:
-        row = c.execute("""SELECT * FROM users WHERE user_id != ? AND is_banned=0 AND age BETWEEN ? AND ? AND user_id NOT IN (SELECT viewed_id FROM seen WHERE viewer_id=?) ORDER BY RANDOM() LIMIT 1""", (uid, pref_min, pref_max, uid)).fetchone()
-    if not row:
         c.execute("DELETE FROM seen WHERE viewer_id=?", (uid,)); c.commit()
-        await q.edit_message_text("No new matches for your preferences yet.\n\nNew people join every day. Try again later, or tap Find Match to see more.\n\nTip: Set your State to 'Any' to see more people.")
+        row = c.execute(query, tuple(params)).fetchone()
+    if not row:
+        kb = [
+            [InlineKeyboardButton("🔄 Try Again - Find Match", callback_data="find_match")],
+            [InlineKeyboardButton("⚙️ Change My Preferences", callback_data="my_prefs")],
+            [InlineKeyboardButton("⬅️ Back", callback_data="back_home")],
+        ]
+        await q.edit_message_text("No new matches for your preferences yet. 😔\n\nThis does NOT mean nobody is online. It means no one matches your age/gender filter yet.\n\nTap Try Again, or change your preferences to Any / wider age to see more people.", reply_markup=InlineKeyboardMarkup(kb))
         c.close(); return
     c.execute("INSERT OR IGNORE INTO seen VALUES (?,?)", (uid, row["user_id"])); c.commit(); c.close()
     context.user_data["current_match_id"] = row["user_id"]
@@ -378,7 +377,8 @@ async def cmd_myprofile(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_myprefs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = get_user(update.effective_user.id)
     if not u: await update.message.reply_text("Send /start to create profile."); return
-    await update.message.reply_text(f"⚙️ Preferences:\n• {u['pref_gender']}\n• Age {u['pref_age_min']}-{u['pref_age_max']}\n• {u['pref_country']} - {u['pref_state']}")
+    kb = [[InlineKeyboardButton("✏️ Edit Preferences", callback_data="edit_prefs")],[InlineKeyboardButton("⬅️ Back", callback_data="back_home")]]
+    await update.message.reply_text(f"⚙️ *Your Preferences*\n\n• Looking for: {u['pref_gender']}\n• Age: {u['pref_age_min']}-{u['pref_age_max']}\n• Country: {u['pref_country']}\n• State/City: {u['pref_state']}", reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
 async def cmd_premium(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Send /start then tap Unlock / Premium to see plans.")
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):

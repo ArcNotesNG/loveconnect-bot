@@ -70,7 +70,7 @@ async def get_age(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def get_gender(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer(); context.user_data["gender"] = q.data.split("_")[1]
-    kb = [[InlineKeyboardButton("🇳🇬 Nigeria", callback_data="country_Nigeria"), InlineKeyboardButton("🇬🇭 Ghana", callback_data="country_Ghana")],[InlineKeyboardButton("🇰🇪 Kenya", callback_data="country_Kenya"), InlineKeyboardButton("🌍 Other", callback_data="country_Other")]]
+    kb = [[InlineKeyboardButton("🇳🇬 Nigeria", callback_data="country_Nigeria"), InlineKeyboardButton("🇬🇭 Ghana", callback_data="country_Ghana")],[InlineKeyboardButton("🇰🇪 Kenya", callback_data="country_Kenya"), InlineKeyboardButton("🇿🇦 South Africa", callback_data="country_South Africa")],[InlineKeyboardButton("🇺🇸 USA", callback_data="country_USA"), InlineKeyboardButton("🇬🇧 UK", callback_data="country_UK")],[InlineKeyboardButton("🇨🇦 Canada", callback_data="country_Canada"), InlineKeyboardButton("🇦🇪 UAE", callback_data="country_UAE")],[InlineKeyboardButton("🇦🇺 Australia", callback_data="country_Australia"), InlineKeyboardButton("🌍 Other", callback_data="country_Other")]]
     await q.edit_message_text("What country are you in?", reply_markup=InlineKeyboardMarkup(kb)); return LOCATION
 
 async def get_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -95,7 +95,7 @@ async def get_pref_gender(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def get_pref_age(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer(); p = q.data.split("_"); context.user_data["pref_age_min"] = int(p[2]); context.user_data["pref_age_max"] = int(p[3])
-    kb = [[InlineKeyboardButton("🇳🇬 Nigeria", callback_data="pref_country_Nigeria"), InlineKeyboardButton("🇬🇭 Ghana", callback_data="pref_country_Ghana")],[InlineKeyboardButton("🇰🇪 Kenya", callback_data="pref_country_Kenya"), InlineKeyboardButton("🌍 Any Country", callback_data="pref_country_Any")]]
+    kb = [[InlineKeyboardButton("🇳🇬 Nigeria", callback_data="pref_country_Nigeria"), InlineKeyboardButton("🇬🇭 Ghana", callback_data="pref_country_Ghana")],[InlineKeyboardButton("🇰🇪 Kenya", callback_data="pref_country_Kenya"), InlineKeyboardButton("🇿🇦 South Africa", callback_data="pref_country_South Africa")],[InlineKeyboardButton("🇺🇸 USA", callback_data="pref_country_USA"), InlineKeyboardButton("🇬🇧 UK", callback_data="pref_country_UK")],[InlineKeyboardButton("🇨🇦 Canada", callback_data="pref_country_Canada"), InlineKeyboardButton("🇦🇪 UAE", callback_data="pref_country_UAE")],[InlineKeyboardButton("🇦🇺 Australia", callback_data="pref_country_Australia"), InlineKeyboardButton("🌍 Any Country", callback_data="pref_country_Any")]]
     await q.edit_message_text("What country should your match be from?", reply_markup=InlineKeyboardMarkup(kb)); return PREF_COUNTRY
 
 async def get_pref_country(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -121,7 +121,7 @@ async def edit_pref_gender(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def edit_pref_age(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer(); p = q.data.split("_"); context.user_data["edit_pref_min"] = int(p[2]); context.user_data["edit_pref_max"] = int(p[3])
-    kb = [[InlineKeyboardButton("🇳🇬 Nigeria", callback_data="edit_country_Nigeria"), InlineKeyboardButton("🇬🇭 Ghana", callback_data="edit_country_Ghana")],[InlineKeyboardButton("🇰🇪 Kenya", callback_data="edit_country_Kenya"), InlineKeyboardButton("🌍 Any Country", callback_data="edit_country_Any")]]
+    kb = [[InlineKeyboardButton("🇳🇬 Nigeria", callback_data="edit_country_Nigeria"), InlineKeyboardButton("🇬🇭 Ghana", callback_data="edit_country_Ghana")],[InlineKeyboardButton("🇰🇪 Kenya", callback_data="edit_country_Kenya"), InlineKeyboardButton("🇿🇦 South Africa", callback_data="edit_country_South Africa")],[InlineKeyboardButton("🇺🇸 USA", callback_data="edit_country_USA"), InlineKeyboardButton("🇬🇧 UK", callback_data="edit_country_UK")],[InlineKeyboardButton("🇨🇦 Canada", callback_data="edit_country_Canada"), InlineKeyboardButton("🇦🇪 UAE", callback_data="edit_country_UAE")],[InlineKeyboardButton("🇦🇺 Australia", callback_data="edit_country_Australia"), InlineKeyboardButton("🌍 Any Country", callback_data="edit_country_Any")]]
     await q.edit_message_text("What country should your match be from?", reply_markup=InlineKeyboardMarkup(kb)); return EDIT_PREF_COUNTRY
 
 async def edit_pref_country(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -227,7 +227,6 @@ async def admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
         plan = parts[2]; days = PLANS[plan]["days"]; until = (datetime.datetime.now() + datetime.timedelta(days=days)).isoformat()
         c = db(); c.execute("UPDATE users SET is_premium=1, premium_until=? WHERE user_id=?", (until, uid)); c.execute("UPDATE payments SET status='approved', approved_by=? WHERE user_id=? AND status='pending'", (ADMIN_ID, uid)); c.commit(); c.close()
         await context.bot.send_message(uid, f"🎉 *Payment Approved!*\n\nYour {PLANS[plan]['label']} is ACTIVE until {until[:10]}.\n\nNow go to Find Match - all usernames are unlocked! 💖", parse_mode="Markdown")
-        # After approve, show Unapprove button so admin can undo for testing
         kb = [[InlineKeyboardButton("↩️ Unapprove / Revoke Premium", callback_data=f"revoke_{uid}")]]
         await q.edit_message_text(f"✅ Approved {uid} for {plan}\n\nTap below to undo if this was a test:", reply_markup=InlineKeyboardMarkup(kb))
     elif action == "revoke":
@@ -271,7 +270,6 @@ async def cmd_myprefs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = [[InlineKeyboardButton("✏️ Edit Preferences", callback_data="edit_prefs")],[InlineKeyboardButton("⬅️ Back", callback_data="back_home")]]
     await update.message.reply_text(f"⚙️ *Your Preferences*\n\n• Looking for: {u['pref_gender']}\n• Age: {u['pref_age_min']}-{u['pref_age_max']}\n• Country: {u['pref_country']}\n• State/City: {u['pref_state']}", reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
 
-# --- NEW: REVOKE / UNAPPROVE ---
 async def cmd_revoke(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: await update.message.reply_text("Not admin."); return
     if not context.args: await update.message.reply_text("Use: /revoke <user_id>\nExample: /revoke 123456789\n\nTip: send /myid from the test account to get its ID."); return

@@ -1,6 +1,26 @@
-import sqlite3, logging, datetime, os, asyncio
+import sqlite3, logging, datetime, os, asyncio, threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes, ConversationHandler
+
+# --- KEEP ALIVE FOR RENDER (Fixes No Open Ports) ---
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"LoveConnect Bot is Running")
+    def log_message(self, *args):
+        pass
+
+def keep_alive():
+    port = int(os.environ.get("PORT", 10000))
+    try:
+        HTTPServer(("0.0.0.0", port), Handler).serve_forever()
+    except Exception as e:
+        print(f"Keep alive failed: {e}")
+
+threading.Thread(target=keep_alive, daemon=True).start()
+# --- END KEEP ALIVE ---
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "PUT_YOUR_BOT_TOKEN_HERE")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "123456789"))

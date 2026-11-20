@@ -1,9 +1,9 @@
-import sqlite3, logging, datetime, os, asyncio, threading
+import sqlite3, logging, datetime, os, asyncio, threading, traceback
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes, ConversationHandler
 
-# --- KEEP ALIVE FOR RENDER (Fixes No Open Ports) ---
+# --- KEEP ALIVE FOR RENDER ---
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -20,7 +20,6 @@ def keep_alive():
         print(f"Keep alive failed: {e}")
 
 threading.Thread(target=keep_alive, daemon=True).start()
-# --- END KEEP ALIVE ---
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "PUT_YOUR_BOT_TOKEN_HERE")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "123456789"))
@@ -264,50 +263,65 @@ async def show_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, text="Ma
     else:
         await update.message.reply_text(text, reply_markup=markup)
 
+# --- FIXED FIND MATCH - WILL ALWAYS REPLY ---
 async def do_find_match(uid, chat_id, context, edit_message=None):
-    me = get_user(uid)
-    if not me:
-        return None
-    pref_gender = me["pref_gender"] or "Anyone"
-    pref_min = me["pref_age_min"] or 18
-    pref_max = me["pref_age_max"] or 70
-    c = db()
-    query = """SELECT * FROM users WHERE user_id != ? AND is_banned=0 AND age BETWEEN ? AND ? AND user_id NOT IN (SELECT viewed_id FROM seen WHERE viewer_id=?)"""
-    params = [uid, pref_min, pref_max, uid]
-    if pref_gender != "Anyone":
-        query += " AND gender=?"; params.append(pref_gender)
-    query += " ORDER BY RANDOM() LIMIT 1"
-    row = c.execute(query, tuple(params)).fetchone()
-    if not row:
-        c.execute("DELETE FROM seen WHERE viewer_id=?", (uid,)); c.commit()
+    try:
+        me = get_user(uid)
+        if not me:
+            await context.bot.send_message(chat_id, "Please send /start to create profile first.")
+            return False
+        # Tell user we are searching - so button never looks stuck
+        await context.bot.send_message(chat_id, "🔍 Searching for your match...")
+        pref_gender = me["pref_gender"] or "Anyone"
+        pref_min = me["pref_age_min"] or 18
+        pref_max = me["pref_age_max"] or 70
+        c = db()
+        query = """SELECT * FROM users WHERE user_id != ? AND is_banned=0 AND age BETWEEN ? AND ? AND user_id NOT IN (SELECT viewed_id FROM seen WHERE viewer_id=?)"""
+        params = [uid, pref_min, pref_max, uid]
+        if pref_gender != "Anyone":
+            query += " AND gender=?"; params.append(pref_gender)
+        query += " ORDER BY RANDOM() LIMIT 1"
         row = c.execute(query, tuple(params)).fetchone()
-    if not row:
-        kb = [
-            [InlineKeyboardButton("🔄 Try Again - Find Match", callback_data="find_match")],
-            [InlineKeyboardButton("⚙️ Change My Preferences", callback_data="my_prefs")],
-            [InlineKeyboardButton("⬅️ Back", callback_data="back_home")],
-        ]
-        text = "No new matches for your preferences yet. 😔\n\nThis does NOT mean nobody is online. It means no one matches your age/gender filter yet.\n\nTap Try Again, or change your preferences to Any / wider age to see more people."
-        if edit_message:
-            await edit_message.edit_text(text, reply_markup=InlineKeyboardMarkup(kb))
-        else:
+        if not row:
+            c.execute("DELETE FROM seen WHERE viewer_id=?", (uid,)); c.commit()
+            row = c.execute(query, tuple(params)).fetchone()
+        if not row:
+            kb = [
+                [InlineKeyboardButton("🔄 Try Again - Find Match", callback_data="find_match")],
+                [InlineKeyboardButton("⚙️ Change My Preferences", callback_data="my_prefs")],
+                [InlineKeyboardButton("⬅️ Back", callback_data="back_home")],
+            ]
+            text = "No new matches for your preferences yet. 😔\n\nThis does NOT mean nobody is online. It means no one matches your age/gender filter yet.\n\nTap Try Again, or change your preferences to Any / wider age to see more people."
             await context.bot.send_message(chat_id, text, reply_markup=InlineKeyboardMarkup(kb))
-        c.close(); return False
-    c.execute("INSERT OR IGNORE INTO seen VALUES (?,?)", (uid, row["user_id"])); c.commit(); c.close()
-    context.user_data["current_match_id"] = row["user_id"]
-    premium = is_premium(uid)
-    username_display = f"@{row['username']}" if (premium and row["username"]) else "🔒 ******* (Locked - Unlock to see)"
-    kb = [
-        [InlineKeyboardButton("🔓 Unlock Match", callback_data="unlock_menu")],
-        [InlineKeyboardButton("❤️ Like", callback_data="like_match"), InlineKeyboardButton("⏭️ Next", callback_data="find_match")],
-    ]
-    await context.bot.send_photo(chat_id, row["photo_id"],
-        caption=f"💖 *{row['name']}, {row['age']}*\n📍 {row['location']}\n📝 {row['bio']}\n\nUsername: {username_display}",
-        reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
-    return True
+            c.close(); return False
+        c.execute("INSERT OR IGNORE INTO seen VALUES (?,?)", (uid, row["user_id"])); c.commit(); c.close()
+        context.user_data["current_match_id"] = row["user_id"]
+        premium = is_premium(uid)
+        username_display = f"@{row['username']}" if (premium and row["username"]) else "🔒 ******* (Locked - Unlock to see)"
+        kb = [
+            [InlineKeyboardButton("🔓 Unlock Match", callback_data="unlock_menu")],
+            [InlineKeyboardButton("❤️ Like", callback_data="like_match"), InlineKeyboardButton("⏭️ Next", callback_data="find_match")],
+        ]
+        caption = f"💖 *{row['name']}, {row['age']}*\n📍 {row['location']}\n📝 {row['bio']}\n\nUsername: {username_display}"
+        try:
+            await context.bot.send_photo(chat_id, row["photo_id"], caption=caption, reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
+        except Exception as e:
+            print(f"Photo send failed, sending text: {e}")
+            await context.bot.send_message(chat_id, caption + "\n\n(Photo could not load)", reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
+        return True
+    except Exception as e:
+        print(f"FIND MATCH ERROR: {e}")
+        traceback.print_exc()
+        try:
+            await context.bot.send_message(chat_id, f"⚠️ Error finding match, please try again. Tap /findmatch")
+        except:
+            pass
+        return False
 
 async def find_match(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query; await q.answer()
+    q = update.callback_query
+    try: await q.answer()
+    except: pass
     await do_find_match(q.from_user.id, q.message.chat_id, context)
 
 async def like_match(update: Update, context: ContextTypes.DEFAULT_TYPE):

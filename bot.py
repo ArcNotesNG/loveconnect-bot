@@ -244,13 +244,10 @@ async def show_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, text="Ma
     else:
         await update.message.reply_text(text, reply_markup=markup)
 
-async def find_match(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query; await q.answer()
-    uid = q.from_user.id
+async def do_find_match(uid, chat_id, context, edit_message=None):
     me = get_user(uid)
     if not me:
-        await q.edit_message_text("Please send /start to create profile first.")
-        return
+        return None
     pref_gender = me["pref_gender"] or "Anyone"
     pref_min = me["pref_age_min"] or 18
     pref_max = me["pref_age_max"] or 70
@@ -270,8 +267,12 @@ async def find_match(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("⚙️ Change My Preferences", callback_data="my_prefs")],
             [InlineKeyboardButton("⬅️ Back", callback_data="back_home")],
         ]
-        await q.edit_message_text("No new matches for your preferences yet. 😔\n\nThis does NOT mean nobody is online. It means no one matches your age/gender filter yet.\n\nTap Try Again, or change your preferences to Any / wider age to see more people.", reply_markup=InlineKeyboardMarkup(kb))
-        c.close(); return
+        text = "No new matches for your preferences yet. 😔\n\nThis does NOT mean nobody is online. It means no one matches your age/gender filter yet.\n\nTap Try Again, or change your preferences to Any / wider age to see more people."
+        if edit_message:
+            await edit_message.edit_text(text, reply_markup=InlineKeyboardMarkup(kb))
+        else:
+            await context.bot.send_message(chat_id, text, reply_markup=InlineKeyboardMarkup(kb))
+        c.close(); return False
     c.execute("INSERT OR IGNORE INTO seen VALUES (?,?)", (uid, row["user_id"])); c.commit(); c.close()
     context.user_data["current_match_id"] = row["user_id"]
     premium = is_premium(uid)
@@ -280,9 +281,14 @@ async def find_match(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("🔓 Unlock Match", callback_data="unlock_menu")],
         [InlineKeyboardButton("❤️ Like", callback_data="like_match"), InlineKeyboardButton("⏭️ Next", callback_data="find_match")],
     ]
-    await context.bot.send_photo(q.message.chat_id, row["photo_id"],
+    await context.bot.send_photo(chat_id, row["photo_id"],
         caption=f"💖 *{row['name']}, {row['age']}*\n📍 {row['location']}\n📝 {row['bio']}\n\nUsername: {username_display}",
         reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
+    return True
+
+async def find_match(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    await do_find_match(q.from_user.id, q.message.chat_id, context)
 
 async def like_match(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
@@ -369,7 +375,13 @@ async def back_home(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await show_menu(update, context, "Welcome back 💖")
 
 async def cmd_findmatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await show_menu(update, context, "Tap Find Match below 👇")
+    uid = update.effective_user.id
+    me = get_user(uid)
+    if not me:
+        await update.message.reply_text("Please send /start to create profile first.")
+        return
+    await do_find_match(uid, update.effective_chat.id, context)
+
 async def cmd_myprofile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = get_user(update.effective_user.id)
     if not u: await update.message.reply_text("Send /start to create profile."); return

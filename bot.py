@@ -3,7 +3,6 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes, ConversationHandler
 
-# --- KEEP ALIVE FOR RENDER ---
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -79,11 +78,14 @@ def is_premium(uid):
     u = get_user(uid)
     if not u or not u["is_premium"]: return False
     if u["premium_until"]:
-        until = datetime.datetime.fromisoformat(u["premium_until"])
-        if datetime.datetime.now() > until:
-            c = db(); c.execute("UPDATE users SET is_premium=0 WHERE user_id=?", (uid,)); c.commit(); c.close()
-            return False
-        return True
+        try:
+            until = datetime.datetime.fromisoformat(u["premium_until"])
+            if datetime.datetime.now() > until:
+                c = db(); c.execute("UPDATE users SET is_premium=0 WHERE user_id=?", (uid,)); c.commit(); c.close()
+                return False
+            return True
+        except:
+            return True
     return False
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -240,7 +242,7 @@ async def edit_pref_state(update: Update, context: ContextTypes.DEFAULT_TYPE):
         (context.user_data["edit_pref_gender"], context.user_data["edit_pref_min"], context.user_data["edit_pref_max"], context.user_data["edit_pref_country"], update.message.text.strip()[:100], uid))
     c.commit(); c.close()
     c = db(); c.execute("DELETE FROM seen WHERE viewer_id=?", (uid,)); c.commit(); c.close()
-    await update.message.reply_text("✅ Preferences updated! Your matches will now use your new preferences.")
+    await update.message.reply_text("✅ Preferences updated!")
     await show_menu(update, context, "Preferences saved 💖")
     return ConversationHandler.END
 
@@ -263,59 +265,30 @@ async def show_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, text="Ma
     else:
         await update.message.reply_text(text, reply_markup=markup)
 
-# --- FIXED FIND MATCH - WILL ALWAYS REPLY ---
+# --- SIMPLE FIXED FIND MATCH ---
 async def do_find_match(uid, chat_id, context, edit_message=None):
     try:
-        me = get_user(uid)
-        if not me:
-            await context.bot.send_message(chat_id, "Please send /start to create profile first.")
-            return False
-        # Tell user we are searching - so button never looks stuck
         await context.bot.send_message(chat_id, "🔍 Searching for your match...")
-        pref_gender = me["pref_gender"] or "Anyone"
-        pref_min = me["pref_age_min"] or 18
-        pref_max = me["pref_age_max"] or 70
         c = db()
-        query = """SELECT * FROM users WHERE user_id != ? AND is_banned=0 AND age BETWEEN ? AND ? AND user_id NOT IN (SELECT viewed_id FROM seen WHERE viewer_id=?)"""
-        params = [uid, pref_min, pref_max, uid]
-        if pref_gender != "Anyone":
-            query += " AND gender=?"; params.append(pref_gender)
-        query += " ORDER BY RANDOM() LIMIT 1"
-        row = c.execute(query, tuple(params)).fetchone()
+        row = c.execute("SELECT * FROM users WHERE user_id != ? ORDER BY RANDOM() LIMIT 1", (uid,)).fetchone()
+        c.close()
         if not row:
-            c.execute("DELETE FROM seen WHERE viewer_id=?", (uid,)); c.commit()
-            row = c.execute(query, tuple(params)).fetchone()
-        if not row:
-            kb = [
-                [InlineKeyboardButton("🔄 Try Again - Find Match", callback_data="find_match")],
-                [InlineKeyboardButton("⚙️ Change My Preferences", callback_data="my_prefs")],
-                [InlineKeyboardButton("⬅️ Back", callback_data="back_home")],
-            ]
-            text = "No new matches for your preferences yet. 😔\n\nThis does NOT mean nobody is online. It means no one matches your age/gender filter yet.\n\nTap Try Again, or change your preferences to Any / wider age to see more people."
-            await context.bot.send_message(chat_id, text, reply_markup=InlineKeyboardMarkup(kb))
-            c.close(); return False
-        c.execute("INSERT OR IGNORE INTO seen VALUES (?,?)", (uid, row["user_id"])); c.commit(); c.close()
+            await context.bot.send_message(chat_id, "No other user found. Create 2nd profile on other account and try again.")
+            return False
         context.user_data["current_match_id"] = row["user_id"]
-        premium = is_premium(uid)
-        username_display = f"@{row['username']}" if (premium and row["username"]) else "🔒 ******* (Locked - Unlock to see)"
         kb = [
-            [InlineKeyboardButton("🔓 Unlock Match", callback_data="unlock_menu")],
             [InlineKeyboardButton("❤️ Like", callback_data="like_match"), InlineKeyboardButton("⏭️ Next", callback_data="find_match")],
         ]
-        caption = f"💖 *{row['name']}, {row['age']}*\n📍 {row['location']}\n📝 {row['bio']}\n\nUsername: {username_display}"
+        caption = f"💖 {row['name']}, {row['age']}\n📍 {row['location']}\n📝 {row['bio']}\n\nUsername: @{row['username'] if row['username'] else 'No username'}"
         try:
-            await context.bot.send_photo(chat_id, row["photo_id"], caption=caption, reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
+            await context.bot.send_photo(chat_id, row["photo_id"], caption=caption, reply_markup=InlineKeyboardMarkup(kb))
         except Exception as e:
-            print(f"Photo send failed, sending text: {e}")
-            await context.bot.send_message(chat_id, caption + "\n\n(Photo could not load)", reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
+            await context.bot.send_message(chat_id, caption + f"\n\n(Photo failed: {e})", reply_markup=InlineKeyboardMarkup(kb))
         return True
     except Exception as e:
         print(f"FIND MATCH ERROR: {e}")
         traceback.print_exc()
-        try:
-            await context.bot.send_message(chat_id, f"⚠️ Error finding match, please try again. Tap /findmatch")
-        except:
-            pass
+        await context.bot.send_message(chat_id, f"⚠️ REAL ERROR IS:\n\n{e}")
         return False
 
 async def find_match(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -332,14 +305,14 @@ async def like_match(update: Update, context: ContextTypes.DEFAULT_TYPE):
     c = db(); c.execute("INSERT OR IGNORE INTO likes VALUES (?,?,?)", (q.from_user.id, match_id, datetime.datetime.now().isoformat())); c.commit(); c.close()
     try: await context.bot.send_message(match_id, "💖 Someone liked your profile! Open LoveConnect to see who.")
     except: pass
-    await q.edit_message_text("❤️ Like sent! They will see it when they open the bot.")
+    await q.edit_message_text("❤️ Like sent!")
 
 async def unlock_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     uid = q.from_user.id
     if is_premium(uid):
         u = get_user(uid)
-        await q.edit_message_text(f"✅ You are Premium until {u['premium_until'][:10]}.\nYour matches are already unlocked!")
+        await q.edit_message_text(f"✅ You are Premium until {u['premium_until'][:10]}.")
         return
     kb = [
         [InlineKeyboardButton("💳 Weekly - ₦1,500 (7 days)", url=PLANS["weekly"]["link"])],

@@ -46,7 +46,6 @@ def db():
 def init_db():
     c = db()
     c.execute("""CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, username TEXT, name TEXT, age INTEGER, gender TEXT, location TEXT, bio TEXT, photo_id TEXT, pref_gender TEXT DEFAULT 'Anyone', pref_age_min INTEGER DEFAULT 18, pref_age_max INTEGER DEFAULT 70, pref_country TEXT DEFAULT 'Nigeria', pref_state TEXT DEFAULT 'Any', is_premium INTEGER DEFAULT 0, premium_until TEXT, is_verified INTEGER DEFAULT 0, verify_photo_id TEXT, created_at TEXT, is_banned INTEGER DEFAULT 0)""")
-    # Add columns if old DB exists
     try: c.execute("ALTER TABLE users ADD COLUMN is_verified INTEGER DEFAULT 0")
     except: pass
     try: c.execute("ALTER TABLE users ADD COLUMN verify_photo_id TEXT")
@@ -219,7 +218,6 @@ async def do_find_match(uid, chat_id, context):
         me = get_user(uid)
         if not me: await context.bot.send_message(chat_id, "Send /start to create profile first."); return False
         c = db()
-        # Verified first
         q = "SELECT * FROM users WHERE user_id != ? AND user_id NOT IN (SELECT viewed_id FROM seen WHERE viewer_id=?) AND age BETWEEN ? AND ?"
         params = [uid, uid, me["pref_age_min"], me["pref_age_max"]]
         if me["pref_gender"] != "Anyone": q += " AND gender=?"; params.append(me["pref_gender"])
@@ -228,14 +226,15 @@ async def do_find_match(uid, chat_id, context):
         q += " ORDER BY is_verified DESC, RANDOM() LIMIT 1"
         row = c.execute(q, params).fetchone()
         if not row:
-            row = c.execute("SELECT * FROM users WHERE user_id != ? ORDER BY is_verified DESC, RANDOM() LIMIT 1", (uid,)).fetchone()
+            # No new people left - FIXED NEXT BUTTON
+            c.execute("DELETE FROM seen WHERE viewer_id=?", (uid,)); c.commit(); c.close()
+            await context.bot.send_message(chat_id, "💔 You've seen everyone!\n\nYou have seen all profiles. Starting again from the top...\nTap Find Match again.")
+            return False
         c.close()
-        if not row: await context.bot.send_message(chat_id, "No other users yet 💔\n\nYou are the first person here! Share LoveConnect with a friend so you can match with each other."); return False
         c = db(); c.execute("INSERT OR IGNORE INTO seen VALUES (?,?)", (uid, row["user_id"])); c.commit(); c.close()
         context.user_data["current_match_id"] = row["user_id"]
         premium = is_premium(uid)
         verified_badge = " ✅ Verified" if row["is_verified"] else ""
-        # FREE USERS NEVER GET USERNAME - ONLY PREMIUM
         if premium:
             contact = f"Username: @{row['username'] if row['username'] else 'No username'} ✅\n\nYou can message them now!"
             kb = [[InlineKeyboardButton("❤️ Like", callback_data="like_match"), InlineKeyboardButton("⏭️ Next", callback_data="find_match")]]
@@ -258,16 +257,29 @@ async def find_match(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def like_match(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer(); match_id = context.user_data.get("current_match_id")
     if not match_id: await q.edit_message_text("Find a match first."); return
-    c = db(); c.execute("INSERT OR IGNORE INTO likes VALUES (?,?,?)", (q.from_user.id, match_id, datetime.datetime.now().isoformat())); c.commit(); c.close()
-    try: await context.bot.send_message(match_id, "💖 Someone liked your profile! Open LoveConnect to see who.")
-    except: pass
+    me = get_user(q.from_user.id)
+    c = db()
+    already = c.execute("SELECT 1 FROM likes WHERE liker_id=? AND liked_id=?", (q.from_user.id, match_id)).fetchone()
+    if already:
+        c.close(); await q.edit_message_text("You already liked this person ❤️"); return
+    c.execute("INSERT OR IGNORE INTO likes VALUES (?,?,?)", (q.from_user.id, match_id, datetime.datetime.now().isoformat())); c.commit(); c.close()
+    if is_premium(match_id):
+        liker_name = me["name"] if me else "Someone"
+        liker_age = me["age"] if me else ""
+        liker_username = f"@{me['username']}" if me and me["username"] else "No username"
+        kb = [[InlineKeyboardButton("💖 Find Match", callback_data="find_match")]]
+        try: await context.bot.send_message(match_id, f"💖 {liker_name}, {liker_age} liked your profile!\n📍 {me['location'] if me else ''}\nUsername: {liker_username}\n\nTap Find Match to see them.", reply_markup=InlineKeyboardMarkup(kb))
+        except: pass
+    else:
+        kb = [[InlineKeyboardButton("💖 Find Match", callback_data="find_match"), InlineKeyboardButton("🔓 Unlock To See Who Liked You", callback_data="unlock_menu")]]
+        try: await context.bot.send_message(match_id, "💖 Someone liked your profile!\n\nOpen LoveConnect and tap Find Match to see who.\n\n🔓 Unlock Premium to see exactly who liked you instantly.", reply_markup=InlineKeyboardMarkup(kb))
+        except: pass
     await q.edit_message_text("❤️ Like sent!")
 
 async def unlock_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer(); uid = q.from_user.id
     if is_premium(uid):
         u = get_user(uid); await q.edit_message_text(f"✅ You are Premium until {u['premium_until'][:10]}."); return
-    # VERIFY BEFORE PAY - CRITICAL
     if not is_verified(uid):
         kb = [[InlineKeyboardButton("✅ Verify Me First (Free)", callback_data="verify_start")],[InlineKeyboardButton("⬅️ Back", callback_data="back_home")]]
         await q.edit_message_text("🔒 *Verify First*\n\nBefore you can pay, do quick Live Verification (30 secs) so we know you are real.\n\n1. Tap Verify Me First\n2. Send selfie holding paper with code\n3. Admin approves\n4. Then you can pay and unlock instantly.", reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown"); return
@@ -285,7 +297,6 @@ async def paid_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.edit_message_text(f"You selected *{PLANS[plan]['label']}*.\n\nNow send your Paystack receipt screenshot as PHOTO.\n\n⚠️ Fake receipts = permanent ban.", parse_mode="Markdown")
 
 async def handle_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Verification photo has priority - if waiting_verify, don't treat as receipt
     if context.user_data.get("waiting_verify"): return
     if not context.user_data.get("waiting_receipt"): return
     if not update.message.photo: await update.message.reply_text("Send receipt as PHOTO, not file."); return

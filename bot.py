@@ -22,6 +22,22 @@ THREE_MONTHS_LINK = "https://paystack.shop/pay/loveconnect-3months"
 PLANS = {"weekly": {"price": 1500, "days": 7, "label": "Weekly - ₦1,500", "link": WEEKLY_LINK},
 "monthly": {"price": 3500, "days": 30, "label": "Monthly - ₦3,500", "link": MONTHLY_LINK},
 "3months": {"price": 8000, "days": 90, "label": "3 Months - ₦8,000", "link": THREE_MONTHS_LINK}}
+
+# --- COUNTRY -> EXAMPLE CITIES ---
+COUNTRY_EXAMPLES = {
+    "Nigeria": "e.g Lagos - Lekki, Abuja",
+    "Ghana": "e.g Accra, Kumasi",
+    "Kenya": "e.g Nairobi, Mombasa",
+    "South Africa": "e.g Johannesburg, Cape Town",
+    "USA": "e.g New York, Los Angeles, Houston",
+    "UK": "e.g London, Manchester, Birmingham",
+    "Canada": "e.g Toronto, Vancouver, Montreal",
+    "UAE": "e.g Dubai, Abu Dhabi, Sharjah",
+    "Australia": "e.g Sydney, Melbourne, Perth",
+    "Other": "e.g Your City",
+    "Any": "e.g Any City"
+}
+
 NAME, AGE, GENDER, LOCATION, BIO, PHOTO, PREF_GENDER, PREF_AGE, PREF_COUNTRY, PREF_STATE, EDIT_PREF_GENDER, EDIT_PREF_AGE, EDIT_PREF_COUNTRY, EDIT_PREF_STATE = range(14)
 logging.basicConfig(level=logging.INFO)
 
@@ -75,7 +91,9 @@ async def get_gender(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def get_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer(); context.user_data["country"] = q.data.split("_",1)[1]
-    await q.edit_message_text("What State / City are you in? (e.g Lagos - Lekki, Abuja)\n\nJust type it:"); return BIO
+    country = context.user_data["country"]
+    example = COUNTRY_EXAMPLES.get(country, "e.g Your City")
+    await q.edit_message_text(f"What State / City are you in, in {country}? ({example})\n\nJust type it:"); return BIO
 
 async def get_bio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if "location" not in context.user_data:
@@ -100,7 +118,9 @@ async def get_pref_age(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def get_pref_country(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer(); context.user_data["pref_country"] = q.data.split("_",2)[2]
-    await q.edit_message_text("What State / City should your match be in?\n\nType it (e.g Lagos, Abuja) or type *Any*:", parse_mode="Markdown"); return PREF_STATE
+    pc = context.user_data["pref_country"]
+    example = COUNTRY_EXAMPLES.get(pc, "e.g Any City")
+    await q.edit_message_text(f"What State / City should your match be in, in {pc}?\n\nType it ({example}) or type *Any*:", parse_mode="Markdown"); return PREF_STATE
 
 async def get_pref_state(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["pref_state"] = update.message.text.strip()[:100]; u = update.effective_user; c = db()
@@ -126,7 +146,9 @@ async def edit_pref_age(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def edit_pref_country(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer(); context.user_data["edit_pref_country"] = q.data.split("_",2)[2]
-    await q.edit_message_text("What State / City should your match be in? Type it or type Any:"); return EDIT_PREF_STATE
+    pc = context.user_data["edit_pref_country"]
+    example = COUNTRY_EXAMPLES.get(pc, "e.g Any City")
+    await q.edit_message_text(f"What State / City should your match be in, in {pc}? Type it ({example}) or type Any:"); return EDIT_PREF_STATE
 
 async def edit_pref_state(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id; c = db()

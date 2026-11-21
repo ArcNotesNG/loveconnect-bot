@@ -1,4 +1,4 @@
-import sqlite3, logging, datetime, os, asyncio, threading, traceback
+import sqlite3, logging, datetime, os, asyncio, threading, traceback, random
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes, ConversationHandler
@@ -23,7 +23,6 @@ PLANS = {"weekly": {"price": 1500, "days": 7, "label": "Weekly - ₦1,500", "lin
 "monthly": {"price": 3500, "days": 30, "label": "Monthly - ₦3,500", "link": MONTHLY_LINK},
 "3months": {"price": 8000, "days": 90, "label": "3 Months - ₦8,000", "link": THREE_MONTHS_LINK}}
 
-# --- COUNTRY -> EXAMPLE CITIES ---
 COUNTRY_EXAMPLES = {
     "Nigeria": "e.g Lagos - Lekki, Abuja",
     "Ghana": "e.g Accra, Kumasi",
@@ -38,7 +37,7 @@ COUNTRY_EXAMPLES = {
     "Any": "e.g Any City"
 }
 
-NAME, AGE, GENDER, LOCATION, BIO, PHOTO, PREF_GENDER, PREF_AGE, PREF_COUNTRY, PREF_STATE, EDIT_PREF_GENDER, EDIT_PREF_AGE, EDIT_PREF_COUNTRY, EDIT_PREF_STATE = range(14)
+NAME, AGE, GENDER, LOCATION, BIO, PHOTO, PREF_GENDER, PREF_AGE, PREF_COUNTRY, PREF_STATE, EDIT_PREF_GENDER, EDIT_PREF_AGE, EDIT_PREF_COUNTRY, EDIT_PREF_STATE, VERIFY_PHOTO = range(15)
 logging.basicConfig(level=logging.INFO)
 
 def db():
@@ -46,7 +45,12 @@ def db():
 
 def init_db():
     c = db()
-    c.execute("""CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, username TEXT, name TEXT, age INTEGER, gender TEXT, location TEXT, bio TEXT, photo_id TEXT, pref_gender TEXT DEFAULT 'Anyone', pref_age_min INTEGER DEFAULT 18, pref_age_max INTEGER DEFAULT 70, pref_country TEXT DEFAULT 'Nigeria', pref_state TEXT DEFAULT 'Any', is_premium INTEGER DEFAULT 0, premium_until TEXT, created_at TEXT, is_banned INTEGER DEFAULT 0)""")
+    c.execute("""CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, username TEXT, name TEXT, age INTEGER, gender TEXT, location TEXT, bio TEXT, photo_id TEXT, pref_gender TEXT DEFAULT 'Anyone', pref_age_min INTEGER DEFAULT 18, pref_age_max INTEGER DEFAULT 70, pref_country TEXT DEFAULT 'Nigeria', pref_state TEXT DEFAULT 'Any', is_premium INTEGER DEFAULT 0, premium_until TEXT, is_verified INTEGER DEFAULT 0, verify_photo_id TEXT, created_at TEXT, is_banned INTEGER DEFAULT 0)""")
+    # Add columns if old DB exists
+    try: c.execute("ALTER TABLE users ADD COLUMN is_verified INTEGER DEFAULT 0")
+    except: pass
+    try: c.execute("ALTER TABLE users ADD COLUMN verify_photo_id TEXT")
+    except: pass
     c.execute("""CREATE TABLE IF NOT EXISTS payments (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, plan TEXT, amount INTEGER, receipt_file_id TEXT, status TEXT DEFAULT 'pending', created_at TEXT, approved_by INTEGER)""")
     c.execute("""CREATE TABLE IF NOT EXISTS seen (viewer_id INTEGER, viewed_id INTEGER, UNIQUE(viewer_id, viewed_id))""")
     c.execute("""CREATE TABLE IF NOT EXISTS likes (liker_id INTEGER, liked_id INTEGER, created_at TEXT, UNIQUE(liker_id, liked_id))""")
@@ -65,6 +69,10 @@ def is_premium(uid):
             return True
         except: return True
     return False
+
+def is_verified(uid):
+    u = get_user(uid)
+    return bool(u and u["is_verified"])
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = get_user(update.effective_user.id)
@@ -127,7 +135,7 @@ async def get_pref_state(update: Update, context: ContextTypes.DEFAULT_TYPE):
     c.execute("""INSERT INTO users (user_id, username, name, age, gender, location, bio, photo_id, pref_gender, pref_age_min, pref_age_max, pref_country, pref_state, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET username=excluded.username, name=excluded.name, age=excluded.age, gender=excluded.gender, location=excluded.location, bio=excluded.bio, photo_id=excluded.photo_id, pref_gender=excluded.pref_gender, pref_age_min=excluded.pref_age_min, pref_age_max=excluded.pref_age_max, pref_country=excluded.pref_country, pref_state=excluded.pref_state""", (u.id, u.username, context.user_data["name"], context.user_data["age"], context.user_data["gender"], f"{context.user_data.get('country','Nigeria')} - {context.user_data['location']}", context.user_data["bio"], context.user_data["photo_id"], context.user_data["pref_gender"], context.user_data["pref_age_min"], context.user_data["pref_age_max"], context.user_data["pref_country"], context.user_data["pref_state"], datetime.datetime.now().isoformat()))
     c.commit(); c.close()
     await update.message.reply_text(f"✅ Profile created!\n\nLooking for: {context.user_data['pref_gender']} | Age: {context.user_data['pref_age_min']}-{context.user_data['pref_age_max']} | {context.user_data['pref_country']} - {context.user_data['pref_state']}")
-    await show_menu(update, context, "Profile ready 💖"); return ConversationHandler.END
+    await show_menu(update, context, "Profile ready 💖\n\nTip: Tap ✅ Get Verified to get more matches!"); return ConversationHandler.END
 
 async def edit_prefs_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
@@ -160,12 +168,50 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Cancelled. Send /start to try again."); return ConversationHandler.END
 
 async def show_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, text="Main Menu"):
-    kb = [[InlineKeyboardButton("💖 Find Match", callback_data="find_match")],[InlineKeyboardButton("👤 My Profile", callback_data="my_profile")],[InlineKeyboardButton("⚙️ My Preferences", callback_data="my_prefs")],[InlineKeyboardButton("🔓 Unlock / Premium", callback_data="unlock_menu")],[InlineKeyboardButton("ℹ️ Help", callback_data="help")]]
+    kb = [[InlineKeyboardButton("💖 Find Match", callback_data="find_match")],[InlineKeyboardButton("👤 My Profile", callback_data="my_profile")],[InlineKeyboardButton("⚙️ My Preferences", callback_data="my_prefs")],[InlineKeyboardButton("✅ Get Verified", callback_data="verify_start")],[InlineKeyboardButton("🔓 Unlock / Premium", callback_data="unlock_menu")],[InlineKeyboardButton("ℹ️ Help", callback_data="help")]]
     m = InlineKeyboardMarkup(kb)
     if update.callback_query:
         try: await update.callback_query.edit_message_text(text, reply_markup=m)
         except: await update.callback_query.message.reply_text(text, reply_markup=m)
     else: await update.message.reply_text(text, reply_markup=m)
+
+# --- VERIFICATION: VERIFY BEFORE PAY ---
+async def verify_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer(); uid = q.from_user.id
+    if is_verified(uid): await q.edit_message_text("✅ You are already Verified!"); return ConversationHandler.END
+    code = str(random.randint(1000, 9999))
+    context.user_data["verify_code"] = code
+    context.user_data["waiting_verify"] = True
+    await q.edit_message_text(f"✅ *Live Verification*\n\nYour code is: *{code}*\n\n1. Write *{code}* + *LoveConnect* on paper\n2. Take a LIVE selfie holding that paper - NO gallery photo\n3. Send it here as photo\n\nThis proves you are real. Verified profiles get ✅ badge and appear FIRST.", parse_mode="Markdown")
+    return VERIFY_PHOTO
+
+async def verify_photo_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.user_data.get("waiting_verify"): return ConversationHandler.END
+    if not update.message.photo: await update.message.reply_text("Send photo, not file."); return VERIFY_PHOTO
+    uid = update.effective_user.id; code = context.user_data.get("verify_code"); file_id = update.message.photo[-1].file_id
+    context.user_data["waiting_verify"] = False
+    c = db(); c.execute("UPDATE users SET verify_photo_id=? WHERE user_id=?", (file_id, uid)); c.commit(); c.close()
+    kb = [[InlineKeyboardButton("✅ Approve Verify", callback_data=f"verify_approve_{uid}"), InlineKeyboardButton("❌ Reject Verify", callback_data=f"verify_reject_{uid}")]]
+    await context.bot.send_message(ADMIN_ID, f"🔍 *NEW VERIFICATION*\nUser: @{update.effective_user.username} ({uid})\nCode was: {code}\n\nCheck: Does paper show {code} + LoveConnect? Does face match profile photo?", parse_mode="Markdown")
+    await context.bot.send_photo(ADMIN_ID, file_id, caption=f"Verify selfie from {uid} - Code: {code}", reply_markup=InlineKeyboardMarkup(kb))
+    await update.message.reply_text("✅ Selfie sent! Admin will check your code and approve. You will get ✅ Verified badge.")
+    await show_menu(update, context, "Verification sent for review 💖")
+    return ConversationHandler.END
+
+async def verify_admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    if q.from_user.id != ADMIN_ID: await q.edit_message_text("Not admin."); return
+    parts = q.data.split("_"); action = parts[1]; uid = int(parts[2])
+    if action == "approve":
+        c = db(); c.execute("UPDATE users SET is_verified=1 WHERE user_id=?", (uid,)); c.commit(); c.close()
+        try: await context.bot.send_message(uid, "🎉 *You are now Verified ✅*\n\nYour profile now shows ✅ Verified badge and appears FIRST to others!\n\nNow you can unlock Premium to see usernames.", parse_mode="Markdown")
+        except: pass
+        await q.edit_message_text(f"✅ Verified {uid}")
+    else:
+        c = db(); c.execute("UPDATE users SET is_verified=0, verify_photo_id=NULL WHERE user_id=?", (uid,)); c.commit(); c.close()
+        try: await context.bot.send_message(uid, "❌ Verification rejected. Paper must show your code clearly. Tap Get Verified to try again with new code.")
+        except: pass
+        await q.edit_message_text(f"❌ Rejected verify for {uid}")
 
 async def do_find_match(uid, chat_id, context):
     try:
@@ -173,27 +219,30 @@ async def do_find_match(uid, chat_id, context):
         me = get_user(uid)
         if not me: await context.bot.send_message(chat_id, "Send /start to create profile first."); return False
         c = db()
+        # Verified first
         q = "SELECT * FROM users WHERE user_id != ? AND user_id NOT IN (SELECT viewed_id FROM seen WHERE viewer_id=?) AND age BETWEEN ? AND ?"
         params = [uid, uid, me["pref_age_min"], me["pref_age_max"]]
         if me["pref_gender"] != "Anyone": q += " AND gender=?"; params.append(me["pref_gender"])
         if me["pref_country"] != "Any": q += " AND location LIKE ?"; params.append(f"{me['pref_country']}%")
         if me["pref_state"] and me["pref_state"].lower() != "any": q += " AND location LIKE ?"; params.append(f"%{me['pref_state']}%")
-        q += " ORDER BY RANDOM() LIMIT 1"
+        q += " ORDER BY is_verified DESC, RANDOM() LIMIT 1"
         row = c.execute(q, params).fetchone()
         if not row:
-            row = c.execute("SELECT * FROM users WHERE user_id != ? ORDER BY RANDOM() LIMIT 1", (uid,)).fetchone()
+            row = c.execute("SELECT * FROM users WHERE user_id != ? ORDER BY is_verified DESC, RANDOM() LIMIT 1", (uid,)).fetchone()
         c.close()
-        if not row: await context.bot.send_message(chat_id, "No other user found. Create 2nd profile on other account and try again."); return False
+        if not row: await context.bot.send_message(chat_id, "No other users yet 💔\n\nYou are the first person here! Share LoveConnect with a friend so you can match with each other."); return False
         c = db(); c.execute("INSERT OR IGNORE INTO seen VALUES (?,?)", (uid, row["user_id"])); c.commit(); c.close()
         context.user_data["current_match_id"] = row["user_id"]
         premium = is_premium(uid)
+        verified_badge = " ✅ Verified" if row["is_verified"] else ""
+        # FREE USERS NEVER GET USERNAME - ONLY PREMIUM
         if premium:
             contact = f"Username: @{row['username'] if row['username'] else 'No username'} ✅\n\nYou can message them now!"
             kb = [[InlineKeyboardButton("❤️ Like", callback_data="like_match"), InlineKeyboardButton("⏭️ Next", callback_data="find_match")]]
         else:
             contact = "🔒 Username Hidden\n\nPay ₦1,500 to unlock this person's Telegram username."
             kb = [[InlineKeyboardButton("❤️ Like", callback_data="like_match"), InlineKeyboardButton("⏭️ Next", callback_data="find_match")],[InlineKeyboardButton("🔓 Unlock Username - ₦1,500", callback_data="unlock_menu")]]
-        caption = f"💖 {row['name']}, {row['age']}\n📍 {row['location']}\n📝 {row['bio']}\n\n{contact}"
+        caption = f"💖 {row['name']}, {row['age']}{verified_badge}\n📍 {row['location']}\n📝 {row['bio']}\n\n{contact}"
         try: await context.bot.send_photo(chat_id, row["photo_id"], caption=caption, reply_markup=InlineKeyboardMarkup(kb))
         except Exception as e: await context.bot.send_message(chat_id, caption + f"\n\n(Photo failed: {e})", reply_markup=InlineKeyboardMarkup(kb))
         return True
@@ -218,8 +267,12 @@ async def unlock_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer(); uid = q.from_user.id
     if is_premium(uid):
         u = get_user(uid); await q.edit_message_text(f"✅ You are Premium until {u['premium_until'][:10]}."); return
+    # VERIFY BEFORE PAY - CRITICAL
+    if not is_verified(uid):
+        kb = [[InlineKeyboardButton("✅ Verify Me First (Free)", callback_data="verify_start")],[InlineKeyboardButton("⬅️ Back", callback_data="back_home")]]
+        await q.edit_message_text("🔒 *Verify First*\n\nBefore you can pay, do quick Live Verification (30 secs) so we know you are real.\n\n1. Tap Verify Me First\n2. Send selfie holding paper with code\n3. Admin approves\n4. Then you can pay and unlock instantly.", reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown"); return
     kb = [[InlineKeyboardButton("💳 Weekly - ₦1,500 (7 days)", url=PLANS["weekly"]["link"])],[InlineKeyboardButton("💳 Monthly - ₦3,500 (30 days) ⭐", url=PLANS["monthly"]["link"])],[InlineKeyboardButton("💳 3 Months - ₦8,000 (90 days) 🔥", url=PLANS["3months"]["link"])],[InlineKeyboardButton("✅ I Have Paid", callback_data="i_have_paid")],[InlineKeyboardButton("⬅️ Back", callback_data="back_home")]]
-    await q.edit_message_text("🔓 *Unlock Match*\n\nChoose plan:\n\n*Weekly ₦1,500* - 7 days\n*Monthly ₦3,500* - 30 days - Most Popular\n*3 Months ₦8,000* - 90 days - Best Value\n\n1. Tap Pay (Paystack)\n2. Screenshot receipt\n3. Tap I Have Paid & send receipt", reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
+    await q.edit_message_text("🔓 *Unlock Match*\n\n✅ You are Verified! Now choose plan:\n\n*Weekly ₦1,500* - 7 days\n*Monthly ₦3,500* - 30 days - Most Popular\n*3 Months ₦8,000* - 90 days - Best Value\n\n1. Tap Pay (Paystack)\n2. Screenshot receipt\n3. Tap I Have Paid & send receipt", reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
 
 async def i_have_paid(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
@@ -232,6 +285,8 @@ async def paid_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.edit_message_text(f"You selected *{PLANS[plan]['label']}*.\n\nNow send your Paystack receipt screenshot as PHOTO.\n\n⚠️ Fake receipts = permanent ban.", parse_mode="Markdown")
 
 async def handle_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Verification photo has priority - if waiting_verify, don't treat as receipt
+    if context.user_data.get("waiting_verify"): return
     if not context.user_data.get("waiting_receipt"): return
     if not update.message.photo: await update.message.reply_text("Send receipt as PHOTO, not file."); return
     uid = update.effective_user.id; plan = context.user_data.get("pending_plan", "weekly"); context.user_data["waiting_receipt"] = False; file_id = update.message.photo[-1].file_id
@@ -265,7 +320,8 @@ async def my_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer(); u = get_user(q.from_user.id)
     if not u: await q.edit_message_text("Send /start to create profile."); return
     status = f"Premium until {u['premium_until'][:10]} ✅" if is_premium(q.from_user.id) else "Free (Locked) 🔒"
-    await q.edit_message_text(f"👤 *{u['name']}, {u['age']}*\n📍 {u['location']}\n📝 {u['bio']}\nStatus: {status}", parse_mode="Markdown")
+    verified = "✅ Verified" if u["is_verified"] else "Not Verified"
+    await q.edit_message_text(f"👤 *{u['name']}, {u['age']}* {verified}\n📍 {u['location']}\n📝 {u['bio']}\nStatus: {status}", parse_mode="Markdown")
 
 async def my_prefs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer(); u = get_user(q.from_user.id)
@@ -308,7 +364,7 @@ async def cmd_myid(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_premium(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Send /start then tap Unlock / Premium to see plans.")
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Help: Find Match -> Pay -> Send Receipt -> Admin approves")
+    await update.message.reply_text("Help: Find Match -> Verify -> Pay -> Send Receipt -> Admin approves")
 async def set_menu_commands(app):
     await app.bot.set_my_commands([BotCommand("start", "Start / Create Profile"), BotCommand("findmatch", "Find a Match"), BotCommand("myprofile", "View My Profile"), BotCommand("myprefs", "My Preferences"), BotCommand("premium", "Unlock Premium"), BotCommand("help", "Help")])
 
@@ -316,9 +372,10 @@ def main():
     asyncio.set_event_loop(asyncio.new_event_loop()); init_db(); app = Application.builder().token(BOT_TOKEN).build(); app.post_init = set_menu_commands
     conv = ConversationHandler(entry_points=[CommandHandler("start", start)], states={NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_name)], AGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_age)], GENDER: [CallbackQueryHandler(get_gender, pattern="^gender_")], LOCATION: [CallbackQueryHandler(get_location, pattern="^country_")], BIO: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_bio)], PHOTO: [MessageHandler(filters.PHOTO, get_photo)], PREF_GENDER: [CallbackQueryHandler(get_pref_gender, pattern="^pref_gender_")], PREF_AGE: [CallbackQueryHandler(get_pref_age, pattern="^pref_age_")], PREF_COUNTRY: [CallbackQueryHandler(get_pref_country, pattern="^pref_country_")], PREF_STATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_pref_state)]}, fallbacks=[CommandHandler("cancel", cancel)], allow_reentry=True)
     edit_conv = ConversationHandler(entry_points=[CallbackQueryHandler(edit_prefs_start, pattern="^edit_prefs$")], states={EDIT_PREF_GENDER: [CallbackQueryHandler(edit_pref_gender, pattern="^edit_gender_")], EDIT_PREF_AGE: [CallbackQueryHandler(edit_pref_age, pattern="^edit_age_")], EDIT_PREF_COUNTRY: [CallbackQueryHandler(edit_pref_country, pattern="^edit_country_")], EDIT_PREF_STATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_pref_state)]}, fallbacks=[CommandHandler("cancel", cancel)], allow_reentry=True)
-    app.add_handler(conv); app.add_handler(edit_conv)
+    verify_conv = ConversationHandler(entry_points=[CallbackQueryHandler(verify_start, pattern="^verify_start$")], states={VERIFY_PHOTO: [MessageHandler(filters.PHOTO, verify_photo_received)]}, fallbacks=[CommandHandler("cancel", cancel)], allow_reentry=True)
+    app.add_handler(conv); app.add_handler(edit_conv); app.add_handler(verify_conv)
     app.add_handler(CommandHandler("findmatch", cmd_findmatch)); app.add_handler(CommandHandler("myprofile", cmd_myprofile)); app.add_handler(CommandHandler("myprefs", cmd_myprefs)); app.add_handler(CommandHandler("premium", cmd_premium)); app.add_handler(CommandHandler("help", cmd_help)); app.add_handler(CommandHandler("revoke", cmd_revoke)); app.add_handler(CommandHandler("myid", cmd_myid))
-    app.add_handler(CallbackQueryHandler(find_match, pattern="^find_match$")); app.add_handler(CallbackQueryHandler(like_match, pattern="^like_match$")); app.add_handler(CallbackQueryHandler(unlock_menu, pattern="^unlock_menu$")); app.add_handler(CallbackQueryHandler(i_have_paid, pattern="^i_have_paid$")); app.add_handler(CallbackQueryHandler(paid_selected, pattern="^paid_")); app.add_handler(CallbackQueryHandler(admin_action, pattern="^(approve|reject|revoke)_")); app.add_handler(CallbackQueryHandler(my_profile, pattern="^my_profile$")); app.add_handler(CallbackQueryHandler(my_prefs, pattern="^my_prefs$")); app.add_handler(CallbackQueryHandler(back_home, pattern="^back_home$")); app.add_handler(CallbackQueryHandler(lambda u,c: show_menu(u,c,"Help: Find Match -> Pay -> Send Receipt -> Admin approves"), pattern="^help$"))
+    app.add_handler(CallbackQueryHandler(find_match, pattern="^find_match$")); app.add_handler(CallbackQueryHandler(like_match, pattern="^like_match$")); app.add_handler(CallbackQueryHandler(unlock_menu, pattern="^unlock_menu$")); app.add_handler(CallbackQueryHandler(i_have_paid, pattern="^i_have_paid$")); app.add_handler(CallbackQueryHandler(paid_selected, pattern="^paid_")); app.add_handler(CallbackQueryHandler(admin_action, pattern="^(approve|reject|revoke)_")); app.add_handler(CallbackQueryHandler(verify_admin_action, pattern="^verify_(approve|reject)_")); app.add_handler(CallbackQueryHandler(my_profile, pattern="^my_profile$")); app.add_handler(CallbackQueryHandler(my_prefs, pattern="^my_prefs$")); app.add_handler(CallbackQueryHandler(back_home, pattern="^back_home$")); app.add_handler(CallbackQueryHandler(lambda u,c: show_menu(u,c,"Help: Find Match -> Verify -> Pay -> Send Receipt -> Admin approves"), pattern="^help$"))
     app.add_handler(MessageHandler(filters.PHOTO, handle_receipt))
     print("LoveConnect Professional Bot Running..."); app.run_polling()
 
